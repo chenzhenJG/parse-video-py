@@ -3,7 +3,8 @@ from urllib.parse import unquote
 
 import httpx
 from parsel import Selector
-
+from bs4 import BeautifulSoup
+import re
 from .base import BaseParser, VideoAuthor, VideoInfo
 
 
@@ -11,28 +12,59 @@ class DouYin(BaseParser):
     """
     抖音 / 抖音火山版
     """
+   
 
     async def parse_share_url(self, share_url: str) -> VideoInfo:
         async with httpx.AsyncClient(follow_redirects=True) as client:
             response = await client.get(share_url, headers=self.get_default_headers())
             response.raise_for_status()
 
+        # 使用 BeautifulSoup 解析 HTML
+        soup = BeautifulSoup(response.text, 'html.parser')
+
+        # 找到包含 window._ROUTER_DATA 的 script 标签，并提取 nonce 值
+        scripts = soup.find_all('script', text=re.compile(r'window\._ROUTER_DATA\s*=\s*{'))
+        cid = None
+        for script in scripts:
+            nonce_value = script.get('nonce')
+            if nonce_value:
+                cid = nonce_value
+                print(f"====================================Nonce value: {nonce_value}")
+            else:
+                print("No nonce attribute found.")
+
         sel = Selector(response.text)
-        render_data = sel.css("script#RENDER_DATA::text").get(default="")
+        print("aaaaaaaaaaaaaaaaaaaaaaaaaa"+'script[nonce="'+cid+'"]::text')
+        render_data = sel.css('script[nonce="'+cid+'"]::text').getall()
+        
+        # 遍历所有找到的script标签内容
+        for script_content in render_data:
+            # 检查script标签内容是否包含window._ROUTER_DATA
+            if 'window._ROUTER_DATA' in script_content:
+                match = re.search(r'{.*}', script_content)
+                if match:
+                    render_data = match.group(0)
+                else:
+                    print("No JSON data found.")
+                
+                break
+        # # 解码 Unicode 转义序列
+        render_data = re.sub(r'(\\u[a-zA-Z0-9]{4})',lambda x:x.group(1).encode("utf-8").decode("unicode-escape"),render_data)
+        
         if len(render_data) <= 0:
             raise Exception("failed to parse render data from HTML")
         render_data = unquote(render_data)  # urldecode
-
         json_data = json.loads(render_data)
-
+    
+        loaderData = json_data["loaderData"]
         # 如果没有视频信息，获取并抛出异常
-        if len(json_data["app"]["videoInfoRes"]["item_list"]) == 0:
+        if len(loaderData["video_(id)/page"]["videoInfoRes"]["item_list"]) == 0:
             err_detail_msg = "failed to parse video info from HTML"
-            if len(filter_list := json_data["app"]["videoInfoRes"]["filter_list"]) > 0:
+            if len(filter_list := loaderData["video_(id)/page"]["videoInfoRes"]["filter_list"]) > 0:
                 err_detail_msg = filter_list[0]["detail_msg"]
             raise Exception(err_detail_msg)
 
-        data = json_data["app"]["videoInfoRes"]["item_list"][0]
+        data = loaderData["video_(id)/page"]["videoInfoRes"]["item_list"][0]
 
         # 获取图集图片地址
         images = []
